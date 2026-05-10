@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ワンタッチすいぞくかん</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #f3f4f6; touch-action: none; font-family: 'Hiragino Maru Gothic ProN', 'Rounded M+ 1c', sans-serif; }
+        
+        /* 共通ボタンアニメーション */
+        .btn-pop { transition: all 0.1s; box-shadow: 0 6px 0 rgba(0,0,0,0.2); }
+        .btn-pop:active { transform: translateY(6px); box-shadow: 0 0 0 rgba(0,0,0,0.2); }
+
+        /* ---------- 📺 海モード用スタイル ---------- */
+        #oceanCanvas { display: block; width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
+        .ocean-bg {
+            position: absolute; top: 0; left: 0; width: 100vw; height: 100vh;
+            background: linear-gradient(to bottom, #4facfe 0%, #00f2fe 100%);
+            z-index: 0;
+        }
+        .room-badge {
+            position: absolute; top: 20px; left: 20px; z-index: 10;
+            background: rgba(255,255,255,0.9); padding: 10px 20px;
+            border-radius: 100px; font-weight: bold; font-size: 24px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.2); border: 4px solid #4facfe;
+        }
+
+        /* ---------- 📸 カメラモード用スタイル ---------- */
+        .camera-wrapper { position: relative; width: 100%; max-width: 600px; margin: 0 auto; border-radius: 16px; overflow: hidden; background: #000; }
+        #videoElement { width: 100%; display: block; }
+        
+        /* 切り抜き確認用の市松模様背景 */
+        .checkerboard {
+            background-color: #fff;
+            background-image: 
+                linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%, #ccc),
+                linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%, #ccc);
+            background-size: 20px 20px;
+            background-position: 0 0, 10px 10px;
+        }
+        #previewCanvas { width: 100%; display: block; }
+
+    </style>
+</head>
+<body>
+
+    <!-- 1. 最初のモード選択画面 -->
+    <div id="screen-start" class="w-screen h-screen flex flex-col items-center justify-center p-4">
+        <h1 class="text-4xl font-bold mb-10 text-blue-600 drop-shadow-md">🐟 ワンタッチすいぞくかん</h1>
+        <div class="flex flex-col gap-6 w-full max-w-md">
+            <button onclick="startSeaMode()" class="btn-pop w-full bg-blue-500 text-white text-2xl font-bold py-6 rounded-2xl border-4 border-blue-400">
+                📺 おおきなうみ<br><span class="text-lg font-normal">（テレビにつなぐ用）</span>
+            </button>
+            <button onclick="startCameraMode()" class="btn-pop w-full bg-green-500 text-white text-2xl font-bold py-6 rounded-2xl border-4 border-green-400">
+                📸 カメラ<br><span class="text-lg font-normal">（こどもが写真をとる用）</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- 2. 📺 テレビの海モード画面 -->
+    <div id="screen-sea" class="hidden">
+        <div class="ocean-bg"></div>
+        <canvas id="oceanCanvas"></canvas>
+        <div class="room-badge text-gray-800">
+            このうみの番号：<span id="display-room-id" class="text-3xl text-blue-600 tracking-widest ml-2">----</span>
+        </div>
+        <button onclick="toggleFullScreen()" class="absolute top-6 right-6 z-10 bg-white/50 hover:bg-white p-3 rounded-full shadow transition">⛶</button>
+    </div>
+
+    <!-- 3. 📸 カメラモード画面群 -->
+    <div id="screen-camera-container" class="hidden w-screen h-screen flex flex-col items-center justify-center p-4">
+        
+        <!-- 3-1. 接続番号入力 -->
+        <div id="panel-connect" class="w-full max-w-md bg-white p-8 rounded-3xl shadow-xl text-center border-4 border-gray-200">
+            <h2 class="text-2xl font-bold mb-6">おおきなうみの<br>「番号」をいれてね</h2>
+            <input type="text" id="input-room-id" maxlength="4" pattern="\d*" placeholder="例: 1234" class="w-full text-center text-5xl font-bold p-4 border-4 border-blue-200 rounded-xl mb-6 bg-gray-50 focus:outline-none focus:border-blue-500">
+            <button onclick="connectToSea()" class="btn-pop w-full bg-blue-500 text-white text-2xl font-bold py-4 rounded-xl" id="btn-connect">つながる！</button>
+            <p id="connect-status" class="mt-4 text-red-500 font-bold hidden">つながらないよ。番号をたしかめてね。</p>
+        </div>
+
+        <!-- 3-2. 撮影画面 -->
+        <div id="panel-shoot" class="hidden w-full max-w-2xl flex flex-col items-center">
+            <div class="bg-white p-4 rounded-3xl shadow-xl border-4 border-gray-200 w-full">
+                <div class="camera-wrapper rounded-2xl border-4 border-gray-100 mb-4">
+                    <video id="videoElement" autoplay playsinline muted></video>
+                </div>
+                <button onclick="takePicture()" class="btn-pop w-full bg-red-500 text-white text-3xl font-bold py-6 rounded-2xl">📸 とる！</button>
+            </div>
+        </div>
+
+        <!-- 3-3. プレビュー＆切り抜き調整画面 -->
+        <div id="panel-preview" class="hidden w-full max-w-2xl flex flex-col items-center">
+            <div class="bg-white p-4 rounded-3xl shadow-xl border-4 border-gray-200 w-full">
+                <h3 class="text-xl font-bold text-center mb-2">背景が残っていたらスライダーで消してね</h3>
+                
+                <div class="camera-wrapper checkerboard rounded-2xl border-4 border-gray-300 mb-4">
+                    <canvas id="previewCanvas"></canvas>
+                </div>
+
+                <!-- 調整スライダー -->
+                <div class="bg-gray-100 p-4 rounded-xl mb-6">
+                    <div class="mb-4">
+                        <label class="block font-bold text-gray-700 mb-1">① みどりを消す強さ</label>
+                        <input type="range" id="slider-green" min="0.8" max="2.0" step="0.1" value="1.1" class="w-full h-4 bg-gray-300 rounded-lg appearance-none cursor-pointer" oninput="updatePreview()">
+                        <p class="text-xs text-gray-500 mt-1">左に動かすと、薄い緑や黄緑も消えやすくなります。</p>
+                    </div>
+                    <div>
+                        <label class="block font-bold text-gray-700 mb-1">② 暗い影も消すか</label>
+                        <input type="range" id="slider-brightness" min="0" max="150" step="5" value="40" class="w-full h-4 bg-gray-300 rounded-lg appearance-none cursor-pointer" oninput="updatePreview()">
+                        <p class="text-xs text-gray-500 mt-1">左に動かすと、お魚の下にできた暗い影（黒っぽい緑）も消えます。</p>
+                    </div>
+                </div>
+
+                <div class="flex gap-4">
+                    <button onclick="backToShoot()" class="w-1/3 bg-gray-400 text-white text-xl font-bold py-4 rounded-xl btn-pop">とりなおす</button>
+                    <button onclick="sendFish()" class="w-2/3 bg-blue-500 text-white text-2xl font-bold py-4 rounded-xl btn-pop shadow-blue-500/50" id="btn-send">🐟 うみにおくる！</button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // ==========================================
+        // グローバル変数
+        // ==========================================
+        let peer = null;
+        let connection = null; // カメラ側から海側への接続
+        
+        // --- 海モード用 ---
+        let roomID = "";
+        const canvasOcean = document.getElementById('oceanCanvas');
+        const ctxOcean = canvasOcean ? canvasOcean.getContext('2d') : null;
+        let fishes = [];
+
+        // --- カメラモード用 ---
+        const video = document.getElementById('videoElement');
+        const canvasPreview = document.getElementById('previewCanvas');
+        const ctxPreview = canvasPreview ? canvasPreview.getContext('2d') : null;
+        let sourceImageData = null; // 撮影した元の画像データ保持用
+
+        // ==========================================
+        // 共通：UI切り替え
+        // ==========================================
+        function showScreen(id) {
+            ['screen-start', 'screen-sea', 'screen-camera-container'].forEach(s => {
+                document.getElementById(s).classList.add('hidden');
+            });
+            document.getElementById(id).classList.remove('hidden');
+        }
+
+        function showCameraPanel(id) {
+            ['panel-connect', 'panel-shoot', 'panel-preview'].forEach(p => {
+                document.getElementById(p).classList.add('hidden');
+            });
+            document.getElementById(id).classList.remove('hidden');
+        }
+
+        // ==========================================
+        // モード 1: 📺 テレビの海モード（親機）
+        // ==========================================
+        function startSeaMode() {
+            showScreen('screen-sea');
+            resizeOceanCanvas();
+            window.addEventListener('resize', resizeOceanCanvas);
+            
+            // 4桁のランダムなルームIDを生成
+            roomID = Math.floor(1000 + Math.random() * 9000).toString();
+            document.getElementById('display-room-id').innerText = roomID;
+
+            // PeerJSの初期化（他のiPadからの接続を待つ）
+            const peerId = 'suizokukan-' + roomID;
+            peer = new Peer(peerId);
+
+            peer.on('open', (id) => {
+                console.log('海が開きました。ID:', id);
+            });
+
+            // 子機からの接続を受け入れた時
+            peer.on('connection', (conn) => {
+                console.log('カメラがつながりました！');
+                // データ（切り抜かれた魚の画像）を受信した時
+                conn.on('data', (data) => {
+                    if(data.type === 'fish_image' && data.image) {
+                        const img = new Image();
+                        img.onload = () => spawnFish(img);
+                        img.src = data.image; // Base64データ
+                    }
+                });
+            });
+
+            animateOcean();
+        }
+
+        function resizeOceanCanvas() {
+            canvasOcean.width = window.innerWidth;
+            canvasOcean.height = window.innerHeight;
+        }
+
+        function toggleFullScreen() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().catch(err => {
+                    console.log(`Error attempting to enable fullscreen: ${err.message}`);
+                });
+            } else {
+                document.exitFullscreen();
+            }
+        }
+
+        // --- 魚を泳がせる処理 ---
+        function spawnFish(img) {
+            const isLeftToRight = Math.random() > 0.5;
+            // 画像が大きすぎる場合はリサイズ（画面の高さの30%を最大値に）
+            let scale = 1;
+            const maxHeight = canvasOcean.height * 0.3;
+            if (img.height > maxHeight) {
+                scale = maxHeight / img.height;
+            }
+
+            const fish = {
+                img: img,
+                width: img.width * scale,
+                height: img.height * scale,
+                x: canvasOcean.width / 2, // 画面中央から出現
+                y: canvasOcean.height / 2,
+                vx: (Math.random() * 3 + 1) * (isLeftToRight ? 1 : -1), // 速度
+                vy: (Math.random() - 0.5) * 2, // 上下のゆらぎ
+                direction: isLeftToRight ? 1 : -1
+            };
+            fishes.push(fish);
+        }
+
+        function animateOcean() {
+            ctxOcean.clearRect(0, 0, canvasOcean.width, canvasOcean.height);
+
+            const time = Date.now() * 0.001;
+            
+            // 泡の描画
+            ctxOcean.fillStyle = 'rgba(255, 255, 255, 0.3)';
+            for(let i=0; i<30; i++) {
+                const bubbleX = (Math.sin(time + i) * 50) + (canvasOcean.width / 30 * i);
+                const bubbleY = canvasOcean.height - ((time * 60 + i * 150) % canvasOcean.height);
+                ctxOcean.beginPath();
+                ctxOcean.arc(bubbleX, bubbleY, (i%4)+2, 0, Math.PI * 2);
+                ctxOcean.fill();
+            }
+
+            // 魚の描画
+            for (let i = 0; i < fishes.length; i++) {
+                let f = fishes[i];
+                f.x += f.vx;
+                f.y += f.vy + Math.sin(time * 2 + i) * 1.5;
+
+                // 画面端で折り返し
+                if (f.x < -f.width || f.x > canvasOcean.width + f.width) {
+                    f.vx *= -1;
+                    f.direction *= -1;
+                    f.y = Math.random() * (canvasOcean.height - f.height) + f.height/2; 
+                }
+
+                ctxOcean.save();
+                ctxOcean.translate(f.x, f.y);
+                if (f.direction < 0) {
+                    ctxOcean.scale(-1, 1);
+                }
+                ctxOcean.drawImage(f.img, -f.width/2, -f.height/2, f.width, f.height);
+                ctxOcean.restore();
+            }
+            requestAnimationFrame(animateOcean);
+        }
+
+
+        // ==========================================
+        // モード 2: 📸 カメラモード（子機）
+        // ==========================================
+        function startCameraMode() {
+            showScreen('screen-camera-container');
+            showCameraPanel('panel-connect');
+            peer = new Peer(); // 子機側のPeer初期化
+        }
+
+        function connectToSea() {
+            const inputId = document.getElementById('input-room-id').value;
+            const statusText = document.getElementById('connect-status');
+            const btn = document.getElementById('btn-connect');
+            
+            if(inputId.length !== 4) return;
+
+            btn.innerText = "つないでいます...";
+            btn.disabled = true;
+            statusText.classList.add('hidden');
+
+            const targetPeerId = 'suizokukan-' + inputId;
+            connection = peer.connect(targetPeerId);
+
+            connection.on('open', () => {
+                // 接続成功したらカメラを起動して撮影画面へ
+                btn.innerText = "つながる！";
+                btn.disabled = false;
+                initCameraAndShowShoot();
+            });
+
+            connection.on('error', (err) => {
+                btn.innerText = "つながる！";
+                btn.disabled = false;
+                statusText.classList.remove('hidden');
+                console.error(err);
+            });
+            
+            // タイムアウト処理（3秒経ってもopenしなければエラー表示）
+            setTimeout(() => {
+                if(!connection.open) {
+                    btn.innerText = "つながる！";
+                    btn.disabled = false;
+                    statusText.classList.remove('hidden');
+                }
+            }, 3000);
+        }
+
+        async function initCameraAndShowShoot() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+                video.srcObject = stream;
+            } catch (err) {
+                try {
+                    const streamFallback = await navigator.mediaDevices.getUserMedia({ video: true });
+                    video.srcObject = streamFallback;
+                } catch (fallbackErr) {
+                    alert("カメラが使えません。許可設定を確認してください。");
+                    return;
+                }
+            }
+            showCameraPanel('panel-shoot');
+        }
+
+        // --- 撮影とプレビュー ---
+        function takePicture() {
+            // 元画像を取得
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = video.videoWidth;
+            tempCanvas.height = video.videoHeight;
+            const tCtx = tempCanvas.getContext('2d');
+            tCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
+            
+            // 画像データをグローバルに保持
+            sourceImageData = tCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+            
+            // プレビューキャンバスのサイズを合わせる
+            canvasPreview.width = tempCanvas.width;
+            canvasPreview.height = tempCanvas.height;
+
+            showCameraPanel('panel-preview');
+            updatePreview(); // 初回の切り抜き適用
+        }
+
+        function backToShoot() {
+            showCameraPanel('panel-shoot');
+        }
+
+        // --- 改良版 みどり色（クロマキー）抜き処理（スライダー連動） ---
+        function updatePreview() {
+            if (!sourceImageData) return;
+
+            const greenRatio = parseFloat(document.getElementById('slider-green').value);
+            const minBrightness = parseInt(document.getElementById('slider-brightness').value);
+
+            // 元データをコピーして加工用データを作成
+            const newImageData = new ImageData(
+                new Uint8ClampedArray(sourceImageData.data),
+                sourceImageData.width,
+                sourceImageData.height
+            );
+            const data = newImageData.data;
+
+            for (let i = 0; i < data.length; i += 4) {
+                const r = data[i];
+                const g = data[i + 1];
+                const b = data[i + 2];
+                
+                // 緑の強さを判定（緑が赤や青の何倍あるか、かつ一定の明るさがあるか）
+                if (g > r * greenRatio && g > b * greenRatio && g > minBrightness) {
+                    // 背景（緑）と判定して透明にする
+                    data[i + 3] = 0; 
+                }
+            }
+            ctxPreview.putImageData(newImageData, 0, 0);
+        }
+
+        // --- 海へ送信 ---
+        function sendFish() {
+            const btn = document.getElementById('btn-send');
+            btn.innerText = "おくりちゅう...";
+            btn.disabled = true;
+
+            // 1. プレビューの余白を自動カット（データ量を減らすため）
+            const trimmedCanvas = trimCanvas(canvasPreview);
+            
+            if (!trimmedCanvas) {
+                alert("ぜんぶ透明になっちゃったみたい！とりなおしてね。");
+                btn.innerText = "🐟 うみにおくる！";
+                btn.disabled = false;
+                return;
+            }
+
+            // 2. Base64画像に変換して送信
+            const base64Image = trimmedCanvas.toDataURL('image/png');
+            
+            if (connection && connection.open) {
+                connection.send({
+                    type: 'fish_image',
+                    image: base64Image
+                });
+
+                // 送信完了の演出
+                setTimeout(() => {
+                    alert("うみにお魚がとんでいったよ！");
+                    btn.innerText = "🐟 うみにおくる！";
+                    btn.disabled = false;
+                    backToShoot(); // カメラに戻る
+                }, 500);
+            } else {
+                alert("うみとの通信が切れてしまったみたいです。やりなおしてね。");
+                btn.innerText = "🐟 うみにおくる！";
+                btn.disabled = false;
+            }
+        }
+
+        // 余白切り取り関数（そのまま利用）
+        function trimCanvas(sourceCanvas) {
+            const ctx = sourceCanvas.getContext('2d');
+            const pixels = ctx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
+            const l = pixels.data.length;
+            let bound = { top: null, left: null, right: null, bottom: null };
+            
+            for (let i = 0; i < l; i += 4) {
+                if (pixels.data[i + 3] > 0) { // 完全な透明以外を探す
+                    const x = (i / 4) % sourceCanvas.width;
+                    const y = ~~((i / 4) / sourceCanvas.width);
+
+                    if (bound.top === null) bound.top = y;
+                    if (bound.left === null) bound.left = x;
+                    else if (x < bound.left) bound.left = x;
+                    if (bound.right === null) bound.right = x;
+                    else if (bound.right < x) bound.right = x;
+                    if (bound.bottom === null) bound.bottom = y;
+                    else if (bound.bottom < y) bound.bottom = y;
+                }
+            }
+            if (bound.top === null) return null;
+
+            const trimHeight = bound.bottom - bound.top + 1;
+            const trimWidth = bound.right - bound.left + 1;
+            const trimmed = document.createElement('canvas');
+            trimmed.width = trimWidth;
+            trimmed.height = trimHeight;
+            trimmed.getContext('2d').putImageData(ctx.getImageData(bound.left, bound.top, trimWidth, trimHeight), 0, 0);
+            return trimmed;
+        }
+
+    </script>
+</body>
+</html>
