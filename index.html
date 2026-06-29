@@ -2,39 +2,64 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>ワンタッチすいぞくかん</title>
+
+    <!-- ===== PWA ===== -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#4facfe">
+    <!-- iOS（iPad）でホーム画面に追加したときの設定 -->
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="すいぞくかん">
+    <link rel="apple-touch-icon" href="icons/icon-180.png">
+
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #f3f4f6; touch-action: none; font-family: 'Hiragino Maru Gothic ProN', 'Rounded M+ 1c', sans-serif; }
-        
+        body {
+            margin: 0; overflow: hidden; background-color: #f3f4f6;
+            touch-action: none; -webkit-user-select: none; user-select: none;
+            font-family: 'Hiragino Maru Gothic ProN', 'Rounded M+ 1c', sans-serif;
+            /* iPadのノッチ/セーフエリア対応 */
+            padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+            box-sizing: border-box;
+        }
+
         /* 共通ボタンアニメーション */
         .btn-pop { transition: all 0.1s; box-shadow: 0 6px 0 rgba(0,0,0,0.2); }
         .btn-pop:active { transform: translateY(6px); box-shadow: 0 0 0 rgba(0,0,0,0.2); }
 
         /* ---------- 📺 海モード用スタイル ---------- */
-        #oceanCanvas { display: block; width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
+        #oceanCanvas { display: block; width: 100vw; height: 100vh; position: fixed; top: 0; left: 0; z-index: 1; }
         .ocean-bg {
-            position: absolute; top: 0; left: 0; width: 100vw; height: 100vh;
-            background: linear-gradient(to bottom, #4facfe 0%, #00f2fe 100%);
+            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            background: linear-gradient(to bottom, #4facfe 0%, #0089d6 55%, #006bb3 100%);
             z-index: 0;
         }
         .room-badge {
-            position: absolute; top: 20px; left: 20px; z-index: 10;
+            position: fixed; top: 20px; left: 20px; z-index: 10;
             background: rgba(255,255,255,0.9); padding: 10px 20px;
             border-radius: 100px; font-weight: bold; font-size: 24px;
             box-shadow: 0 4px 10px rgba(0,0,0,0.2); border: 4px solid #4facfe;
+        }
+        .sea-status {
+            position: fixed; top: 20px; left: 50%; transform: translateX(-50%); z-index: 10;
+            background: rgba(255,255,255,0.85); padding: 8px 18px; border-radius: 100px;
+            font-weight: bold; font-size: 18px; color: #1f2937;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+            display: flex; gap: 14px; align-items: center;
         }
 
         /* ---------- 📸 カメラモード用スタイル ---------- */
         .camera-wrapper { position: relative; width: 100%; max-width: 600px; margin: 0 auto; border-radius: 16px; overflow: hidden; background: #000; }
         #videoElement { width: 100%; display: block; }
-        
+
         /* 切り抜き確認用の市松模様背景 */
         .checkerboard {
             background-color: #fff;
-            background-image: 
+            background-image:
                 linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%, #ccc),
                 linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%, #ccc);
             background-size: 20px 20px;
@@ -42,6 +67,12 @@
         }
         #previewCanvas { width: 100%; display: block; }
 
+        /* つながり状態のバナー */
+        .conn-banner {
+            position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 20;
+            background: #ef4444; color: #fff; font-weight: bold; padding: 12px 20px;
+            border-radius: 100px; box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+        }
     </style>
 </head>
 <body>
@@ -66,16 +97,20 @@
         <div class="room-badge text-gray-800">
             このうみの番号：<span id="display-room-id" class="text-3xl text-blue-600 tracking-widest ml-2">----</span>
         </div>
+        <div id="sea-status" class="sea-status">
+            <span id="sea-conn">🟡 じゅんびちゅう…</span>
+            <span id="sea-fish">🐟 0ひき</span>
+        </div>
         <button onclick="toggleFullScreen()" class="absolute top-6 right-6 z-10 bg-white/50 hover:bg-white p-3 rounded-full shadow transition">⛶</button>
     </div>
 
     <!-- 3. 📸 カメラモード画面群 -->
     <div id="screen-camera-container" class="hidden w-screen h-screen flex flex-col items-center justify-center p-4">
-        
+
         <!-- 3-1. 接続番号入力 -->
         <div id="panel-connect" class="w-full max-w-md bg-white p-8 rounded-3xl shadow-xl text-center border-4 border-gray-200">
             <h2 class="text-2xl font-bold mb-6">おおきなうみの<br>「番号」をいれてね</h2>
-            <input type="text" id="input-room-id" maxlength="4" pattern="\d*" placeholder="例: 1234" class="w-full text-center text-5xl font-bold p-4 border-4 border-blue-200 rounded-xl mb-6 bg-gray-50 focus:outline-none focus:border-blue-500">
+            <input type="text" id="input-room-id" maxlength="4" inputmode="numeric" pattern="\d*" placeholder="例: 1234" class="w-full text-center text-5xl font-bold p-4 border-4 border-blue-200 rounded-xl mb-6 bg-gray-50 focus:outline-none focus:border-blue-500">
             <button onclick="connectToSea()" class="btn-pop w-full bg-blue-500 text-white text-2xl font-bold py-4 rounded-xl" id="btn-connect">つながる！</button>
             <p id="connect-status" class="mt-4 text-red-500 font-bold hidden">つながらないよ。番号をたしかめてね。</p>
         </div>
@@ -94,7 +129,7 @@
         <div id="panel-preview" class="hidden w-full max-w-2xl flex flex-col items-center">
             <div class="bg-white p-4 rounded-3xl shadow-xl border-4 border-gray-200 w-full">
                 <h3 class="text-xl font-bold text-center mb-2">背景が残っていたらスライダーで消してね</h3>
-                
+
                 <div class="camera-wrapper checkerboard rounded-2xl border-4 border-gray-300 mb-4">
                     <canvas id="previewCanvas"></canvas>
                 </div>
@@ -128,18 +163,25 @@
         // ==========================================
         let peer = null;
         let connection = null; // カメラ側から海側への接続
-        
+
         // --- 海モード用 ---
         let roomID = "";
+        let seaPeerRetries = 0;
+        let connectedCount = 0;
         const canvasOcean = document.getElementById('oceanCanvas');
         const ctxOcean = canvasOcean ? canvasOcean.getContext('2d') : null;
         let fishes = [];
+        let ripples = [];
+        let weeds = [];
+        let oceanRunning = false;
 
         // --- カメラモード用 ---
         const video = document.getElementById('videoElement');
         const canvasPreview = document.getElementById('previewCanvas');
         const ctxPreview = canvasPreview ? canvasPreview.getContext('2d') : null;
         let sourceImageData = null; // 撮影した元の画像データ保持用
+        let cameraStream = null;
+        let pendingConnect = false;
 
         // ==========================================
         // 共通：UI切り替え
@@ -159,116 +201,326 @@
         }
 
         // ==========================================
+        // 画面スリープ防止（iPadOS 16.4+ / 海モードでTV表示が消えないように）
+        // ==========================================
+        let wakeLock = null;
+        async function requestWakeLock() {
+            try {
+                if ('wakeLock' in navigator) {
+                    wakeLock = await navigator.wakeLock.request('screen');
+                }
+            } catch (e) { /* 失敗してもアプリは動くので無視 */ }
+        }
+        document.addEventListener('visibilitychange', () => {
+            // 画面復帰時に再取得
+            if (wakeLock !== null && document.visibilityState === 'visible') requestWakeLock();
+        });
+
+        // ==========================================
         // モード 1: 📺 テレビの海モード（親機）
         // ==========================================
         function startSeaMode() {
             showScreen('screen-sea');
             resizeOceanCanvas();
             window.addEventListener('resize', resizeOceanCanvas);
-            
+            requestWakeLock();
+            unlockAudio();          // ユーザー操作のうちにオーディオを有効化
+            createSeaPeer();
+            if (!oceanRunning) { oceanRunning = true; animateOcean(); }
+        }
+
+        function setSeaConn(text) {
+            const el = document.getElementById('sea-conn');
+            if (el) el.innerText = text;
+        }
+        function updateSeaCounts() {
+            const c = document.getElementById('sea-conn');
+            const f = document.getElementById('sea-fish');
+            if (c) c.innerText = connectedCount > 0 ? ('🟢 カメラ ' + connectedCount + 'だい') : '🟡 カメラをまってるよ';
+            if (f) f.innerText = '🐟 ' + fishes.length + 'ひき';
+        }
+
+        function createSeaPeer() {
             // 4桁のランダムなルームIDを生成
             roomID = Math.floor(1000 + Math.random() * 9000).toString();
             document.getElementById('display-room-id').innerText = roomID;
 
-            // PeerJSの初期化（他のiPadからの接続を待つ）
             const peerId = 'suizokukan-' + roomID;
             peer = new Peer(peerId);
 
             peer.on('open', (id) => {
                 console.log('海が開きました。ID:', id);
+                updateSeaCounts();
             });
 
             // 子機からの接続を受け入れた時
             peer.on('connection', (conn) => {
-                console.log('カメラがつながりました！');
+                conn.on('open', () => {
+                    connectedCount++;
+                    updateSeaCounts();
+                });
                 // データ（切り抜かれた魚の画像）を受信した時
                 conn.on('data', (data) => {
-                    if(data.type === 'fish_image' && data.image) {
+                    if (data && data.type === 'fish_image' && data.image) {
                         const img = new Image();
-                        img.onload = () => spawnFish(img);
+                        img.onload = () => { spawnFish(img); updateSeaCounts(); };
                         img.src = data.image; // Base64データ
+                        // 届いたよ、と子機へ返事（送信完了を確実にするため）
+                        try { conn.send({ type: 'fish_ack' }); } catch (e) {}
                     }
                 });
+                conn.on('close', () => {
+                    connectedCount = Math.max(0, connectedCount - 1);
+                    updateSeaCounts();
+                });
+                conn.on('error', (e) => console.warn('conn error', e));
             });
 
-            animateOcean();
+            // 信号サーバーとの接続が切れた → 番号は維持したまま再接続
+            peer.on('disconnected', () => {
+                setSeaConn('🟡 せつぞくしなおし中…');
+                try { peer.reconnect(); } catch (e) {}
+            });
+
+            // エラー処理：番号がかぶった場合は別番号で作り直す
+            peer.on('error', (err) => {
+                console.error('peer error', err);
+                if (err && err.type === 'unavailable-id' && seaPeerRetries < 8) {
+                    seaPeerRetries++;
+                    try { peer.destroy(); } catch (e) {}
+                    createSeaPeer(); // 別の番号で再生成
+                } else if (err && err.type === 'network') {
+                    setSeaConn('🟡 ネットさいせつぞく中…');
+                }
+            });
         }
 
         function resizeOceanCanvas() {
             canvasOcean.width = window.innerWidth;
             canvasOcean.height = window.innerHeight;
+            generateWeeds();
+        }
+
+        function generateWeeds() {
+            weeds = [];
+            const count = Math.max(4, Math.floor(canvasOcean.width / 180));
+            for (let i = 0; i < count; i++) {
+                weeds.push({
+                    x: (canvasOcean.width / count) * i + Math.random() * 60 + 20,
+                    h: Math.random() * 70 + 60,
+                    phase: Math.random() * Math.PI * 2,
+                    hue: 140 + Math.random() * 30
+                });
+            }
         }
 
         function toggleFullScreen() {
             if (!document.fullscreenElement) {
-                document.documentElement.requestFullscreen().catch(err => {
-                    console.log(`Error attempting to enable fullscreen: ${err.message}`);
-                });
+                if (document.documentElement.requestFullscreen) {
+                    document.documentElement.requestFullscreen().catch(err => console.log(err.message));
+                }
             } else {
                 document.exitFullscreen();
             }
         }
 
+        // ==========================================
+        // 演出：到着リップル＆かんたんな効果音
+        // ==========================================
+        let audioCtx = null;
+        function unlockAudio() {
+            try {
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+            } catch (e) {}
+        }
+        function playSplash() {
+            if (!audioCtx) return;
+            try {
+                const o = audioCtx.createOscillator();
+                const g = audioCtx.createGain();
+                o.type = 'sine';
+                o.frequency.setValueAtTime(660, audioCtx.currentTime);
+                o.frequency.exponentialRampToValueAtTime(990, audioCtx.currentTime + 0.12);
+                g.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+                g.gain.exponentialRampToValueAtTime(0.12, audioCtx.currentTime + 0.02);
+                g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.25);
+                o.connect(g); g.connect(audioCtx.destination);
+                o.start(); o.stop(audioCtx.currentTime + 0.26);
+            } catch (e) {}
+        }
+
         // --- 魚を泳がせる処理 ---
+        const MAX_FISH = 60; // 表示しすぎて重くならないよう上限
         function spawnFish(img) {
             const isLeftToRight = Math.random() > 0.5;
-            // 画像が大きすぎる場合はリサイズ（画面の高さの30%を最大値に）
+            // 画像が大きすぎる場合はリサイズ（画面の高さの28%を最大値に）
             let scale = 1;
-            const maxHeight = canvasOcean.height * 0.3;
-            if (img.height > maxHeight) {
-                scale = maxHeight / img.height;
-            }
+            const maxHeight = canvasOcean.height * 0.28;
+            if (img.height > maxHeight) scale = maxHeight / img.height;
+
+            const w = img.width * scale;
+            const h = img.height * scale;
+            const baseY = Math.random() * (canvasOcean.height * 0.62) + canvasOcean.height * 0.12;
 
             const fish = {
                 img: img,
-                width: img.width * scale,
-                height: img.height * scale,
-                x: canvasOcean.width / 2, // 画面中央から出現
-                y: canvasOcean.height / 2,
-                vx: (Math.random() * 3 + 1) * (isLeftToRight ? 1 : -1), // 速度
-                vy: (Math.random() - 0.5) * 2, // 上下のゆらぎ
-                direction: isLeftToRight ? 1 : -1
+                width: w,
+                height: h,
+                x: isLeftToRight ? (-w / 2) : (canvasOcean.width + w / 2), // 画面の外（端）から登場
+                baseY: baseY,
+                y: baseY,
+                speed: Math.random() * 1.6 + 1.0,
+                direction: isLeftToRight ? 1 : -1,
+                bobAmp: Math.random() * 16 + 8,   // 上下のゆらぎ幅
+                bobSpeed: Math.random() * 1.4 + 0.7,
+                phase: Math.random() * Math.PI * 2,
+                pop: 0                            // 登場時のポップインアニメ（0→1）
             };
             fishes.push(fish);
+            if (fishes.length > MAX_FISH) fishes.shift(); // 古い魚から退場
+
+            // 登場リップル＋効果音
+            ripples.push({ x: fish.x, y: baseY, r: 8, max: 90, life: 1 });
+            playSplash();
         }
 
         function animateOcean() {
-            ctxOcean.clearRect(0, 0, canvasOcean.width, canvasOcean.height);
-
+            const W = canvasOcean.width, H = canvasOcean.height;
+            ctxOcean.clearRect(0, 0, W, H);
             const time = Date.now() * 0.001;
-            
-            // 泡の描画
-            ctxOcean.fillStyle = 'rgba(255, 255, 255, 0.3)';
-            for(let i=0; i<30; i++) {
-                const bubbleX = (Math.sin(time + i) * 50) + (canvasOcean.width / 30 * i);
-                const bubbleY = canvasOcean.height - ((time * 60 + i * 150) % canvasOcean.height);
+
+            drawLightRays(time, W, H);
+            drawBubbles(time, W, H);
+            drawFishes(time, W, H);
+            drawRipples();
+            drawSeabed(time, W, H);
+
+            requestAnimationFrame(animateOcean);
+        }
+
+        // 光のカーテン（god rays）
+        function drawLightRays(t, W, H) {
+            ctxOcean.save();
+            ctxOcean.globalCompositeOperation = 'lighter';
+            for (let i = 0; i < 5; i++) {
+                const x = (i / 5) * W + Math.sin(t * 0.2 + i) * 50;
+                const grad = ctxOcean.createLinearGradient(x, 0, x + 140, H);
+                grad.addColorStop(0, 'rgba(255,255,255,0.10)');
+                grad.addColorStop(1, 'rgba(255,255,255,0)');
+                ctxOcean.fillStyle = grad;
                 ctxOcean.beginPath();
-                ctxOcean.arc(bubbleX, bubbleY, (i%4)+2, 0, Math.PI * 2);
+                ctxOcean.moveTo(x - 40, 0);
+                ctxOcean.lineTo(x + 70, 0);
+                ctxOcean.lineTo(x + 230, H);
+                ctxOcean.lineTo(x + 50, H);
+                ctxOcean.closePath();
                 ctxOcean.fill();
             }
+            ctxOcean.restore();
+        }
 
-            // 魚の描画
+        function drawBubbles(time, W, H) {
+            ctxOcean.fillStyle = 'rgba(255, 255, 255, 0.3)';
+            for (let i = 0; i < 30; i++) {
+                const bubbleX = (Math.sin(time + i) * 50) + (W / 30 * i);
+                const bubbleY = H - ((time * 60 + i * 150) % H);
+                ctxOcean.beginPath();
+                ctxOcean.arc(bubbleX, bubbleY, (i % 4) + 2, 0, Math.PI * 2);
+                ctxOcean.fill();
+            }
+        }
+
+        function drawFishes(time, W, H) {
             for (let i = 0; i < fishes.length; i++) {
-                let f = fishes[i];
-                f.x += f.vx;
-                f.y += f.vy + Math.sin(time * 2 + i) * 1.5;
+                const f = fishes[i];
+                // 横移動
+                f.x += f.speed * f.direction;
+                // 上下のやわらかなゆらぎ
+                f.y = f.baseY + Math.sin(time * f.bobSpeed + f.phase) * f.bobAmp;
+                // ポップイン
+                if (f.pop < 1) f.pop = Math.min(1, f.pop + 0.06);
 
                 // 画面端で折り返し
-                if (f.x < -f.width || f.x > canvasOcean.width + f.width) {
-                    f.vx *= -1;
+                if (f.x < -f.width || f.x > W + f.width) {
                     f.direction *= -1;
-                    f.y = Math.random() * (canvasOcean.height - f.height) + f.height/2; 
+                    f.baseY = Math.random() * (H - f.height) + f.height / 2;
                 }
+
+                const s = easeOutBack(f.pop); // ぷるんと出てくる
+                // 進行方向にあわせてわずかに傾ける
+                const tilt = Math.sin(time * f.bobSpeed + f.phase) * 0.08;
 
                 ctxOcean.save();
                 ctxOcean.translate(f.x, f.y);
-                if (f.direction < 0) {
-                    ctxOcean.scale(-1, 1);
-                }
-                ctxOcean.drawImage(f.img, -f.width/2, -f.height/2, f.width, f.height);
+                ctxOcean.rotate(tilt * f.direction);
+                if (f.direction < 0) ctxOcean.scale(-1, 1);
+                ctxOcean.scale(s, s);
+                ctxOcean.drawImage(f.img, -f.width / 2, -f.height / 2, f.width, f.height);
                 ctxOcean.restore();
             }
-            requestAnimationFrame(animateOcean);
+        }
+
+        function easeOutBack(x) {
+            const c1 = 1.70158, c3 = c1 + 1;
+            return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
+        }
+
+        function drawRipples() {
+            for (let i = ripples.length - 1; i >= 0; i--) {
+                const rp = ripples[i];
+                rp.r += 2.4;
+                rp.life -= 0.02;
+                if (rp.life <= 0 || rp.r > rp.max) { ripples.splice(i, 1); continue; }
+                ctxOcean.save();
+                ctxOcean.strokeStyle = 'rgba(255,255,255,' + (rp.life * 0.6) + ')';
+                ctxOcean.lineWidth = 3;
+                ctxOcean.beginPath();
+                ctxOcean.arc(rp.x, rp.y, rp.r, 0, Math.PI * 2);
+                ctxOcean.stroke();
+                ctxOcean.restore();
+            }
+        }
+
+        function drawSeabed(t, W, H) {
+            const sandH = Math.min(90, H * 0.13);
+            const baseY = H - sandH;
+
+            // 海藻（砂より奥に見えるよう先に描く）
+            ctxOcean.save();
+            ctxOcean.lineCap = 'round';
+            ctxOcean.lineWidth = 9;
+            for (let i = 0; i < weeds.length; i++) {
+                const wd = weeds[i];
+                ctxOcean.strokeStyle = 'hsla(' + wd.hue + ', 55%, 40%, 0.85)';
+                ctxOcean.beginPath();
+                let px = wd.x, py = baseY + 6;
+                ctxOcean.moveTo(px, py);
+                const seg = 6;
+                for (let s = 1; s <= seg; s++) {
+                    const sway = Math.sin(t * 1.1 + wd.phase + s * 0.55) * (s * 3);
+                    px = wd.x + sway;
+                    py = (baseY + 6) - (s / seg) * wd.h;
+                    ctxOcean.lineTo(px, py);
+                }
+                ctxOcean.stroke();
+            }
+            ctxOcean.restore();
+
+            // 砂
+            const grad = ctxOcean.createLinearGradient(0, baseY, 0, H);
+            grad.addColorStop(0, '#f6e7b3');
+            grad.addColorStop(1, '#e3c982');
+            ctxOcean.fillStyle = grad;
+            ctxOcean.beginPath();
+            ctxOcean.moveTo(0, H);
+            ctxOcean.lineTo(0, baseY);
+            for (let x = 0; x <= W; x += 50) {
+                ctxOcean.quadraticCurveTo(x + 25, baseY - 10, x + 50, baseY);
+            }
+            ctxOcean.lineTo(W, H);
+            ctxOcean.closePath();
+            ctxOcean.fill();
         }
 
 
@@ -278,55 +530,99 @@
         function startCameraMode() {
             showScreen('screen-camera-container');
             showCameraPanel('panel-connect');
-            peer = new Peer(); // 子機側のPeer初期化
+            ensureCameraPeer();
+        }
+
+        function ensureCameraPeer() {
+            if (peer && !peer.destroyed) return;
+            peer = new Peer(); // 子機側のPeer初期化（IDは自動）
+            peer.on('error', (err) => {
+                console.error('camera peer error', err);
+                // peer-unavailable は相手が見つからない＝番号ちがいのことが多い
+                handleConnectError(err);
+            });
+            peer.on('disconnected', () => { try { peer.reconnect(); } catch (e) {} });
+        }
+
+        function handleConnectError(err) {
+            const statusText = document.getElementById('connect-status');
+            const btn = document.getElementById('btn-connect');
+            btn.innerText = "つながる！";
+            btn.disabled = false;
+            pendingConnect = false;
+            if (statusText) {
+                if (err && err.type === 'network') {
+                    statusText.innerText = "インターネットにつながっているか たしかめてね。";
+                } else {
+                    statusText.innerText = "つながらないよ。番号をたしかめてね。";
+                }
+                statusText.classList.remove('hidden');
+            }
         }
 
         function connectToSea() {
             const inputId = document.getElementById('input-room-id').value;
             const statusText = document.getElementById('connect-status');
             const btn = document.getElementById('btn-connect');
-            
-            if(inputId.length !== 4) return;
 
+            if (inputId.length !== 4) {
+                statusText.innerText = "4けたの番号をいれてね。";
+                statusText.classList.remove('hidden');
+                return;
+            }
+
+            ensureCameraPeer();
             btn.innerText = "つないでいます...";
             btn.disabled = true;
             statusText.classList.add('hidden');
+            pendingConnect = true;
 
             const targetPeerId = 'suizokukan-' + inputId;
-            connection = peer.connect(targetPeerId);
 
-            connection.on('open', () => {
-                // 接続成功したらカメラを起動して撮影画面へ
-                btn.innerText = "つながる！";
-                btn.disabled = false;
-                initCameraAndShowShoot();
-            });
+            const doConnect = () => {
+                if (!pendingConnect) return;
+                connection = peer.connect(targetPeerId, { reliable: true });
 
-            connection.on('error', (err) => {
-                btn.innerText = "つながる！";
-                btn.disabled = false;
-                statusText.classList.remove('hidden');
-                console.error(err);
-            });
-            
-            // タイムアウト処理（3秒経ってもopenしなければエラー表示）
-            setTimeout(() => {
-                if(!connection.open) {
+                connection.on('open', () => {
+                    pendingConnect = false;
                     btn.innerText = "つながる！";
                     btn.disabled = false;
-                    statusText.classList.remove('hidden');
-                }
-            }, 3000);
+                    initCameraAndShowShoot();
+                });
+
+                connection.on('data', (d) => {
+                    if (d && d.type === 'fish_ack') console.log('海に届いたよ！');
+                });
+
+                connection.on('close', () => {
+                    // 撮影中に切れたら、つなぎ直し画面へ
+                    if (!document.getElementById('panel-connect').classList.contains('hidden')) return;
+                    alert("うみとのつうしんが切れちゃった。もういちど番号をいれてね。");
+                    showCameraPanel('panel-connect');
+                });
+
+                connection.on('error', (err) => handleConnectError(err));
+
+                // タイムアウト（PWA起動直後は時間がかかることがあるので長めに）
+                setTimeout(() => {
+                    if (pendingConnect && (!connection || !connection.open)) {
+                        handleConnectError({ type: 'timeout' });
+                    }
+                }, 8000);
+            };
+
+            if (peer.open) doConnect();
+            else peer.once ? peer.once('open', doConnect) : peer.on('open', doConnect);
         }
 
         async function initCameraAndShowShoot() {
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-                video.srcObject = stream;
+                cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+                video.srcObject = cameraStream;
             } catch (err) {
                 try {
-                    const streamFallback = await navigator.mediaDevices.getUserMedia({ video: true });
-                    video.srcObject = streamFallback;
+                    cameraStream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    video.srcObject = cameraStream;
                 } catch (fallbackErr) {
                     alert("カメラが使えません。許可設定を確認してください。");
                     return;
@@ -343,10 +639,10 @@
             tempCanvas.height = video.videoHeight;
             const tCtx = tempCanvas.getContext('2d');
             tCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
-            
+
             // 画像データをグローバルに保持
             sourceImageData = tCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
-            
+
             // プレビューキャンバスのサイズを合わせる
             canvasPreview.width = tempCanvas.width;
             canvasPreview.height = tempCanvas.height;
@@ -360,6 +656,7 @@
         }
 
         // --- 改良版 みどり色（クロマキー）抜き処理（スライダー連動） ---
+        // エッジをなめらかに抜く（フェザリング）＋ 魚のフチに残る緑を消す（デスピル）
         function updatePreview() {
             if (!sourceImageData) return;
 
@@ -374,15 +671,28 @@
             );
             const data = newImageData.data;
 
+            // フェザー幅：しきい値をどれだけ超えたら完全に透明にするか（境界をなめらかに）
+            const FEATHER = 28;
+
             for (let i = 0; i < data.length; i += 4) {
                 const r = data[i];
-                const g = data[i + 1];
+                let g = data[i + 1];
                 const b = data[i + 2];
-                
-                // 緑の強さを判定（緑が赤や青の何倍あるか、かつ一定の明るさがあるか）
-                if (g > r * greenRatio && g > b * greenRatio && g > minBrightness) {
-                    // 背景（緑）と判定して透明にする
-                    data[i + 3] = 0; 
+
+                const otherMax = Math.max(r, b);
+                // 緑が背景と判定されるしきい値（明るさに応じて自動で変わる）
+                const threshold = otherMax * greenRatio;
+
+                if (g > minBrightness && g > threshold) {
+                    // しきい値をどれだけ超えているか → 奥は完全透明、フチは半透明
+                    const excess = g - threshold;
+                    const alpha = Math.max(0, 255 - (excess / FEATHER) * 255);
+                    data[i + 3] = alpha;
+
+                    // フチに残る緑色を抑える（デスピル）：消し残しの半透明ピクセルのみ補正
+                    if (alpha > 0) {
+                        data[i + 1] = Math.min(g, otherMax);
+                    }
                 }
             }
             ctxPreview.putImageData(newImageData, 0, 0);
@@ -395,23 +705,23 @@
             btn.disabled = true;
 
             // 1. プレビューの余白を自動カット（データ量を減らすため）
-            const trimmedCanvas = trimCanvas(canvasPreview);
-            
-            if (!trimmedCanvas) {
+            let outCanvas = trimCanvas(canvasPreview);
+
+            if (!outCanvas) {
                 alert("ぜんぶ透明になっちゃったみたい！とりなおしてね。");
                 btn.innerText = "🐟 うみにおくる！";
                 btn.disabled = false;
                 return;
             }
 
+            // 1.5 大きすぎる画像は縮小（通信を速く・テレビ側を軽く）
+            outCanvas = downscaleCanvas(outCanvas, 640);
+
             // 2. Base64画像に変換して送信
-            const base64Image = trimmedCanvas.toDataURL('image/png');
-            
+            const base64Image = outCanvas.toDataURL('image/png');
+
             if (connection && connection.open) {
-                connection.send({
-                    type: 'fish_image',
-                    image: base64Image
-                });
+                connection.send({ type: 'fish_image', image: base64Image });
 
                 // 送信完了の演出
                 setTimeout(() => {
@@ -424,16 +734,32 @@
                 alert("うみとの通信が切れてしまったみたいです。やりなおしてね。");
                 btn.innerText = "🐟 うみにおくる！";
                 btn.disabled = false;
+                showCameraPanel('panel-connect');
             }
         }
 
-        // 余白切り取り関数（そのまま利用）
+        // 長辺が maxSize を超える場合だけ縮小する
+        function downscaleCanvas(srcCanvas, maxSize) {
+            const longSide = Math.max(srcCanvas.width, srcCanvas.height);
+            if (longSide <= maxSize) return srcCanvas;
+            const ratio = maxSize / longSide;
+            const out = document.createElement('canvas');
+            out.width = Math.round(srcCanvas.width * ratio);
+            out.height = Math.round(srcCanvas.height * ratio);
+            const octx = out.getContext('2d');
+            octx.imageSmoothingEnabled = true;
+            octx.imageSmoothingQuality = 'high';
+            octx.drawImage(srcCanvas, 0, 0, out.width, out.height);
+            return out;
+        }
+
+        // 余白切り取り関数
         function trimCanvas(sourceCanvas) {
             const ctx = sourceCanvas.getContext('2d');
             const pixels = ctx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
             const l = pixels.data.length;
             let bound = { top: null, left: null, right: null, bottom: null };
-            
+
             for (let i = 0; i < l; i += 4) {
                 if (pixels.data[i + 3] > 0) { // 完全な透明以外を探す
                     const x = (i / 4) % sourceCanvas.width;
@@ -459,6 +785,14 @@
             return trimmed;
         }
 
+        // ==========================================
+        // Service Worker 登録（PWA）
+        // ==========================================
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('sw.js').catch(err => console.log('SW登録失敗', err));
+            });
+        }
     </script>
 </body>
 </html>
