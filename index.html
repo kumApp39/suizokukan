@@ -125,32 +125,18 @@
             </div>
         </div>
 
-        <!-- 3-3. プレビュー＆切り抜き調整画面 -->
+        <!-- 3-3. プレビュー（自動で背景を切り抜いて表示するだけ。調整なし） -->
         <div id="panel-preview" class="hidden w-full max-w-2xl flex flex-col items-center">
             <div class="bg-white p-4 rounded-3xl shadow-xl border-4 border-gray-200 w-full">
-                <h3 class="text-xl font-bold text-center mb-2">背景が残っていたらスライダーで消してね</h3>
+                <h3 class="text-3xl font-bold text-center mb-4 text-blue-600">これでいい？ 🐟</h3>
 
-                <div class="camera-wrapper checkerboard rounded-2xl border-4 border-gray-300 mb-4">
+                <div class="camera-wrapper checkerboard rounded-2xl border-4 border-gray-300 mb-5">
                     <canvas id="previewCanvas"></canvas>
                 </div>
 
-                <!-- 調整スライダー -->
-                <div class="bg-gray-100 p-4 rounded-xl mb-6">
-                    <div class="mb-4">
-                        <label class="block font-bold text-gray-700 mb-1">① みどりを消す強さ</label>
-                        <input type="range" id="slider-green" min="0.8" max="2.0" step="0.1" value="1.1" class="w-full h-4 bg-gray-300 rounded-lg appearance-none cursor-pointer" oninput="updatePreview()">
-                        <p class="text-xs text-gray-500 mt-1">左に動かすと、薄い緑や黄緑も消えやすくなります。</p>
-                    </div>
-                    <div>
-                        <label class="block font-bold text-gray-700 mb-1">② 暗い影も消すか</label>
-                        <input type="range" id="slider-brightness" min="0" max="150" step="5" value="40" class="w-full h-4 bg-gray-300 rounded-lg appearance-none cursor-pointer" oninput="updatePreview()">
-                        <p class="text-xs text-gray-500 mt-1">左に動かすと、お魚の下にできた暗い影（黒っぽい緑）も消えます。</p>
-                    </div>
-                </div>
-
                 <div class="flex gap-4">
-                    <button onclick="backToShoot()" class="w-1/3 bg-gray-400 text-white text-xl font-bold py-4 rounded-xl btn-pop">とりなおす</button>
-                    <button onclick="sendFish()" class="w-2/3 bg-blue-500 text-white text-2xl font-bold py-4 rounded-xl btn-pop shadow-blue-500/50" id="btn-send">🐟 うみにおくる！</button>
+                    <button onclick="backToShoot()" class="w-2/5 bg-gray-400 text-white text-2xl font-bold py-7 rounded-2xl btn-pop">↺ とりなおす</button>
+                    <button onclick="sendFish()" class="w-3/5 bg-blue-500 text-white text-3xl font-bold py-7 rounded-2xl btn-pop shadow-blue-500/50" id="btn-send">🐟 うみにおくる！</button>
                 </div>
             </div>
         </div>
@@ -632,70 +618,126 @@
         }
 
         // --- 撮影とプレビュー ---
+        const WORK_SIZE = 800; // 処理を速く・キレイにするため、この大きさまで縮小して扱う
         function takePicture() {
-            // 元画像を取得
-            const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = video.videoWidth;
-            tempCanvas.height = video.videoHeight;
-            const tCtx = tempCanvas.getContext('2d');
-            tCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
+            const vw = video.videoWidth, vh = video.videoHeight;
+            const scale = Math.min(1, WORK_SIZE / Math.max(vw, vh));
+            const w = Math.round(vw * scale);
+            const h = Math.round(vh * scale);
 
-            // 画像データをグローバルに保持
-            sourceImageData = tCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = w;
+            tempCanvas.height = h;
+            const tCtx = tempCanvas.getContext('2d');
+            tCtx.imageSmoothingEnabled = true;
+            tCtx.imageSmoothingQuality = 'high';
+            tCtx.drawImage(video, 0, 0, w, h);
+
+            // 元画像データを保持
+            sourceImageData = tCtx.getImageData(0, 0, w, h);
 
             // プレビューキャンバスのサイズを合わせる
-            canvasPreview.width = tempCanvas.width;
-            canvasPreview.height = tempCanvas.height;
+            canvasPreview.width = w;
+            canvasPreview.height = h;
 
             showCameraPanel('panel-preview');
-            updatePreview(); // 初回の切り抜き適用
+            processChroma(); // 全自動で背景を切り抜く
         }
 
         function backToShoot() {
             showCameraPanel('panel-shoot');
         }
 
-        // --- 改良版 みどり色（クロマキー）抜き処理（スライダー連動） ---
-        // エッジをなめらかに抜く（フェザリング）＋ 魚のフチに残る緑を消す（デスピル）
-        function updatePreview() {
+        // ==========================================
+        // 全自動 背景切り抜き（緑画用紙を自動検出してきれいに抜く）
+        // ・画面のフチから「つながっている緑」だけを消す → 魚の中の緑（緑の魚など）は残る
+        // ・しきい値は背景の緑の濃さから自動決定（調整スライダー不要）
+        // ・エッジをなめらかに（アンチエイリアス）＋ フチに残る緑を除去（デスピル）
+        // ==========================================
+        function processChroma() {
             if (!sourceImageData) return;
+            const W = sourceImageData.width, H = sourceImageData.height;
+            const N = W * H;
+            const src = sourceImageData.data;
+            const out = new Uint8ClampedArray(src); // 加工用コピー
 
-            const greenRatio = parseFloat(document.getElementById('slider-green').value);
-            const minBrightness = parseInt(document.getElementById('slider-brightness').value);
+            // 1) 各ピクセルの「緑らしさ」 = 緑 - max(赤,青)
+            const greenness = new Int16Array(N);
+            for (let p = 0, i = 0; p < N; p++, i += 4) {
+                greenness[p] = src[i + 1] - Math.max(src[i], src[i + 2]);
+            }
 
-            // 元データをコピーして加工用データを作成
-            const newImageData = new ImageData(
-                new Uint8ClampedArray(sourceImageData.data),
-                sourceImageData.width,
-                sourceImageData.height
-            );
-            const data = newImageData.data;
-
-            // フェザー幅：しきい値をどれだけ超えたら完全に透明にするか（境界をなめらかに）
-            const FEATHER = 28;
-
-            for (let i = 0; i < data.length; i += 4) {
-                const r = data[i];
-                let g = data[i + 1];
-                const b = data[i + 2];
-
-                const otherMax = Math.max(r, b);
-                // 緑が背景と判定されるしきい値（明るさに応じて自動で変わる）
-                const threshold = otherMax * greenRatio;
-
-                if (g > minBrightness && g > threshold) {
-                    // しきい値をどれだけ超えているか → 奥は完全透明、フチは半透明
-                    const excess = g - threshold;
-                    const alpha = Math.max(0, 255 - (excess / FEATHER) * 255);
-                    data[i + 3] = alpha;
-
-                    // フチに残る緑色を抑える（デスピル）：消し残しの半透明ピクセルのみ補正
-                    if (alpha > 0) {
-                        data[i + 1] = Math.min(g, otherMax);
+            // 2) フチ（背景＝緑画用紙）をサンプリングして、背景の緑の濃さを推定
+            const border = Math.max(2, Math.floor(Math.min(W, H) * 0.04));
+            const samples = [];
+            for (let y = 0; y < H; y++) {
+                const edgeRow = (y < border || y >= H - border);
+                for (let x = 0; x < W; x++) {
+                    if (edgeRow || x < border || x >= W - border) {
+                        const gv = greenness[y * W + x];
+                        if (gv > 0) samples.push(gv);
                     }
                 }
             }
-            ctxPreview.putImageData(newImageData, 0, 0);
+            // 背景の緑らしさの中央値から、しきい値を自動決定
+            let threshold = 16;
+            if (samples.length > 0) {
+                samples.sort((a, b) => a - b);
+                const median = samples[(samples.length >> 1)];
+                threshold = Math.max(12, median * 0.45);
+            }
+
+            // 3) 背景候補マスク（緑らしさがしきい値を超える）
+            const isBg = new Uint8Array(N);
+            for (let p = 0; p < N; p++) if (greenness[p] > threshold) isBg[p] = 1;
+
+            // 4) 画面のフチから、つながった背景候補だけをフラッドフィルで塗る
+            //    → 魚の内側にある緑（背景とつながっていない緑）は消えない
+            const visited = new Uint8Array(N);
+            const stack = new Int32Array(N);
+            let sp = 0;
+            const push = (p) => { if (!visited[p] && isBg[p]) { visited[p] = 1; stack[sp++] = p; } };
+            for (let x = 0; x < W; x++) { push(x); push((H - 1) * W + x); }
+            for (let y = 0; y < H; y++) { push(y * W); push(y * W + (W - 1)); }
+            while (sp > 0) {
+                const p = stack[--sp];
+                const x = p % W, y = (p / W) | 0;
+                if (x > 0) push(p - 1);
+                if (x < W - 1) push(p + 1);
+                if (y > 0) push(p - W);
+                if (y < H - 1) push(p + W);
+            }
+
+            // 5) アルファ（背景=0 / 魚=255）を作って、3x3で軽くぼかしてエッジをなめらかに
+            const alpha = new Uint8ClampedArray(N);
+            for (let p = 0; p < N; p++) alpha[p] = visited[p] ? 0 : 255;
+
+            const soft = new Uint8ClampedArray(N);
+            for (let y = 0; y < H; y++) {
+                for (let x = 0; x < W; x++) {
+                    let sum = 0, cnt = 0;
+                    for (let dy = -1; dy <= 1; dy++) {
+                        const yy = y + dy; if (yy < 0 || yy >= H) continue;
+                        for (let dx = -1; dx <= 1; dx++) {
+                            const xx = x + dx; if (xx < 0 || xx >= W) continue;
+                            sum += alpha[yy * W + xx]; cnt++;
+                        }
+                    }
+                    soft[y * W + x] = sum / cnt;
+                }
+            }
+
+            // 6) アルファ適用＋デスピル（エッジに残る緑を抑える）
+            for (let p = 0, i = 0; p < N; p++, i += 4) {
+                const a = soft[p];
+                out[i + 3] = a;
+                if (a < 255) { // 背景またはフチ → 緑かぶりを抑える
+                    const m = Math.max(out[i], out[i + 2]);
+                    if (out[i + 1] > m) out[i + 1] = m;
+                }
+            }
+
+            ctxPreview.putImageData(new ImageData(out, W, H), 0, 0);
         }
 
         // --- 海へ送信 ---
