@@ -16,6 +16,7 @@
     <link rel="apple-touch-icon" href="icons/icon-180.png">
 
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
         body {
             margin: 0; overflow: hidden; background-color: #f3f4f6;
@@ -146,68 +147,13 @@
         // ==========================================
         // グローバル変数
         // ==========================================
-
-        // ==========================================
-        // 🌐 Google Apps Script 中継サーバーの設定
-        // ------------------------------------------
-        // 【なぜApps Scriptを使う？】
-        // 校内Wi-Fiは安全のため「端末どうしの直接通信」をブロックする
-        // 設定（クライアント分離／AP分離）になっていることが多く、
-        // 2台のiPad同士が直接つながる方式（WebRTC）は失敗しやすいです。
-        // そこで、2台はそれぞれ「Googleのサーバー」とだけ通信し、
-        // 写真データはそのサーバーを経由して受け渡しします。
-        // これなら校内Wi-Fiが許可している「ふつうのインターネット閲覧」
-        // と同じ仕組み（HTTPS）だけで完結するので、外部の中継サービスは
-        // 一切使わずに、Google Workspaceの中だけで完結します。
-        //
-        // 【設定方法】
-        // 1. Googleドライブで「新規」→「その他」→「Google Apps Script」
-        // 2. このチャットで渡した Code.gs の内容をすべて貼り付けて保存
-        // 3. 右上の「デプロイ」→「新しいデプロイ」→種類「ウェブアプリ」
-        //    ・実行ユーザー：自分
-        //    ・アクセスできるユーザー：全員
-        // 4. 発行された「ウェブアプリのURL」を下の1行に貼り付けて保存
-        // ==========================================
-        const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxxK3FUGdH1fzA-cagn7F8O-Xmuo4vWa7z59NQBeTqNFxchJMxhVRNeJgdGxxj8P_KKHQ/exec"; // 例: "https://script.google.com/macros/s/AKfycb.../exec"
-
-        // 海側：何秒おきに新しい魚を確認するか（ミリ秒）
-        const POLL_INTERVAL_MS = 2500;
-        // カメラ側：何秒おきに「接続中です」と伝えるか（ミリ秒）
-        const HEARTBEAT_INTERVAL_MS = 5000;
-
-        function isAppsScriptConfigured() {
-            return !!APPS_SCRIPT_URL && APPS_SCRIPT_URL.indexOf('http') === 0;
-        }
-
-        // Apps Scriptへ問い合わせる共通関数（GET）
-        async function callAppsScriptGet(params) {
-            const url = APPS_SCRIPT_URL + '?' + new URLSearchParams(params).toString();
-            const res = await fetch(url, { method: 'GET' });
-            if (!res.ok) throw new Error('サーバーエラー: ' + res.status);
-            return await res.json();
-        }
-
-        // Apps Scriptへ問い合わせる共通関数（POST）
-        // ※Apps Scriptのウェブアプリは text/plain で送ると一番安定するため、
-        //   Content-Typeは明示的に指定しない（ブラウザ標準のままにする）
-        async function callAppsScriptPost(body) {
-            const res = await fetch(APPS_SCRIPT_URL, {
-                method: 'POST',
-                body: JSON.stringify(body)
-            });
-            if (!res.ok) throw new Error('サーバーエラー: ' + res.status);
-            return await res.json();
-        }
-
-        function randomDeviceId() {
-            return 'dev-' + Math.random().toString(36).slice(2, 10);
-        }
+        let peer = null;
+        let connection = null; // カメラ側から海側への接続
 
         // --- 海モード用 ---
         let roomID = "";
+        let seaPeerRetries = 0;
         let connectedCount = 0;
-        let seaPollTimer = null;
-        let lastSeaError = false;
         const canvasOcean = document.getElementById('oceanCanvas');
         const ctxOcean = canvasOcean ? canvasOcean.getContext('2d') : null;
         let fishes = [];
@@ -221,9 +167,7 @@
         const ctxPreview = canvasPreview ? canvasPreview.getContext('2d') : null;
         let sourceImageData = null; // 撮影した元の画像データ保持用
         let cameraStream = null;
-        let connectedRoomId = null;     // つながっている海の番号
-        let cameraHeartbeatTimer = null;
-        const myDeviceId = randomDeviceId(); // このカメラ端末を識別するID
+        let pendingConnect = false;
 
         // ==========================================
         // 共通：UI切り替え
@@ -267,7 +211,7 @@
             window.addEventListener('resize', resizeOceanCanvas);
             requestWakeLock();
             unlockAudio();          // ユーザー操作のうちにオーディオを有効化
-            startSeaPolling();
+            createSeaPeer();
             if (!oceanRunning) { oceanRunning = true; animateOcean(); }
         }
 
@@ -282,44 +226,59 @@
             if (f) f.innerText = '🐟 ' + fishes.length + 'ひき';
         }
 
-        function startSeaPolling() {
+        function createSeaPeer() {
             // 4桁のランダムなルームIDを生成
             roomID = Math.floor(1000 + Math.random() * 9000).toString();
             document.getElementById('display-room-id').innerText = roomID;
 
-            if (!isAppsScriptConfigured()) {
-                setSeaConn('🔴 せってい未完了（APPS_SCRIPT_URL）');
-                return;
-            }
+            const peerId = 'suizokukan-' + roomID;
+            peer = new Peer(peerId);
 
-            updateSeaCounts();
-            if (seaPollTimer) clearInterval(seaPollTimer);
-            pollSeaOnce(); // すぐに1回実行
-            seaPollTimer = setInterval(pollSeaOnce, POLL_INTERVAL_MS);
-        }
+            peer.on('open', (id) => {
+                console.log('海が開きました。ID:', id);
+                updateSeaCounts();
+            });
 
-        async function pollSeaOnce() {
-            try {
-                const data = await callAppsScriptGet({ action: 'poll', roomId: roomID });
-                lastSeaError = false;
-
-                connectedCount = (data && typeof data.cameraCount === 'number') ? data.cameraCount : connectedCount;
-
-                if (data && Array.isArray(data.fishes)) {
-                    data.fishes.forEach((item) => {
+            // 子機からの接続を受け入れた時
+            peer.on('connection', (conn) => {
+                conn.on('open', () => {
+                    connectedCount++;
+                    updateSeaCounts();
+                });
+                // データ（切り抜かれた魚の画像）を受信した時
+                conn.on('data', (data) => {
+                    if (data && data.type === 'fish_image' && data.image) {
                         const img = new Image();
                         img.onload = () => { spawnFish(img); updateSeaCounts(); };
-                        img.src = item.image; // Base64データ
-                    });
+                        img.src = data.image; // Base64データ
+                        // 届いたよ、と子機へ返事（送信完了を確実にするため）
+                        try { conn.send({ type: 'fish_ack' }); } catch (e) {}
+                    }
+                });
+                conn.on('close', () => {
+                    connectedCount = Math.max(0, connectedCount - 1);
+                    updateSeaCounts();
+                });
+                conn.on('error', (e) => console.warn('conn error', e));
+            });
+
+            // 信号サーバーとの接続が切れた → 番号は維持したまま再接続
+            peer.on('disconnected', () => {
+                setSeaConn('🟡 せつぞくしなおし中…');
+                try { peer.reconnect(); } catch (e) {}
+            });
+
+            // エラー処理：番号がかぶった場合は別番号で作り直す
+            peer.on('error', (err) => {
+                console.error('peer error', err);
+                if (err && err.type === 'unavailable-id' && seaPeerRetries < 8) {
+                    seaPeerRetries++;
+                    try { peer.destroy(); } catch (e) {}
+                    createSeaPeer(); // 別の番号で再生成
+                } else if (err && err.type === 'network') {
+                    setSeaConn('🟡 ネットさいせつぞく中…');
                 }
-                updateSeaCounts();
-            } catch (e) {
-                console.warn('海のポーリングに失敗', e);
-                if (!lastSeaError) { // 連続でアラートを出さないよう最初の1回だけ表示を変える
-                    lastSeaError = true;
-                    setSeaConn('🟡 サーバーと通信中…');
-                }
-            }
+            });
         }
 
         function resizeOceanCanvas() {
@@ -557,20 +516,37 @@
         function startCameraMode() {
             showScreen('screen-camera-container');
             showCameraPanel('panel-connect');
+            ensureCameraPeer();
         }
 
-        function handleConnectError(message) {
+        function ensureCameraPeer() {
+            if (peer && !peer.destroyed) return;
+            peer = new Peer(); // 子機側のPeer初期化（IDは自動）
+            peer.on('error', (err) => {
+                console.error('camera peer error', err);
+                // peer-unavailable は相手が見つからない＝番号ちがいのことが多い
+                handleConnectError(err);
+            });
+            peer.on('disconnected', () => { try { peer.reconnect(); } catch (e) {} });
+        }
+
+        function handleConnectError(err) {
             const statusText = document.getElementById('connect-status');
             const btn = document.getElementById('btn-connect');
             btn.innerText = "つながる！";
             btn.disabled = false;
+            pendingConnect = false;
             if (statusText) {
-                statusText.innerText = message || "つながらないよ。番号をたしかめてね。";
+                if (err && err.type === 'network') {
+                    statusText.innerText = "インターネットにつながっているか たしかめてね。";
+                } else {
+                    statusText.innerText = "つながらないよ。番号をたしかめてね。";
+                }
                 statusText.classList.remove('hidden');
             }
         }
 
-        async function connectToSea() {
+        function connectToSea() {
             const inputId = document.getElementById('input-room-id').value;
             const statusText = document.getElementById('connect-status');
             const btn = document.getElementById('btn-connect');
@@ -581,46 +557,48 @@
                 return;
             }
 
-            if (!isAppsScriptConfigured()) {
-                handleConnectError("せっていがまだだよ。せんせいに伝えてね。（APPS_SCRIPT_URL）");
-                return;
-            }
-
+            ensureCameraPeer();
             btn.innerText = "つないでいます...";
             btn.disabled = true;
             statusText.classList.add('hidden');
+            pendingConnect = true;
 
-            try {
-                // Apps Scriptサーバーに届くかどうかを確認（実際の「お部屋」確認は不要：
-                // 海側がポーリングしている番号宛に送るだけなので、ここではサーバーへの
-                // 到達確認ができればOK）
-                const res = await callAppsScriptGet({ action: 'ping' });
-                if (!res || res.status !== 'ok') throw new Error('ping failed');
+            const targetPeerId = 'suizokukan-' + inputId;
 
-                connectedRoomId = inputId;
-                btn.innerText = "つながる！";
-                btn.disabled = false;
-                startCameraHeartbeat();
-                initCameraAndShowShoot();
-            } catch (e) {
-                console.error('connect error', e);
-                handleConnectError("インターネットにつながっているか たしかめてね。");
-            }
-        }
+            const doConnect = () => {
+                if (!pendingConnect) return;
+                connection = peer.connect(targetPeerId, { reliable: true });
 
-        function startCameraHeartbeat() {
-            if (cameraHeartbeatTimer) clearInterval(cameraHeartbeatTimer);
-            const sendHeartbeat = () => {
-                if (!connectedRoomId) return;
-                callAppsScriptPost({ action: 'heartbeat', roomId: connectedRoomId, deviceId: myDeviceId })
-                    .catch((e) => console.warn('heartbeat失敗', e));
+                connection.on('open', () => {
+                    pendingConnect = false;
+                    btn.innerText = "つながる！";
+                    btn.disabled = false;
+                    initCameraAndShowShoot();
+                });
+
+                connection.on('data', (d) => {
+                    if (d && d.type === 'fish_ack') console.log('海に届いたよ！');
+                });
+
+                connection.on('close', () => {
+                    // 撮影中に切れたら、つなぎ直し画面へ
+                    if (!document.getElementById('panel-connect').classList.contains('hidden')) return;
+                    alert("うみとのつうしんが切れちゃった。もういちど番号をいれてね。");
+                    showCameraPanel('panel-connect');
+                });
+
+                connection.on('error', (err) => handleConnectError(err));
+
+                // タイムアウト（PWA起動直後は時間がかかることがあるので長めに）
+                setTimeout(() => {
+                    if (pendingConnect && (!connection || !connection.open)) {
+                        handleConnectError({ type: 'timeout' });
+                    }
+                }, 8000);
             };
-            sendHeartbeat();
-            cameraHeartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
-        }
 
-        function stopCameraHeartbeat() {
-            if (cameraHeartbeatTimer) { clearInterval(cameraHeartbeatTimer); cameraHeartbeatTimer = null; }
+            if (peer.open) doConnect();
+            else peer.once ? peer.once('open', doConnect) : peer.on('open', doConnect);
         }
 
         async function initCameraAndShowShoot() {
@@ -763,7 +741,7 @@
         }
 
         // --- 海へ送信 ---
-        async function sendFish() {
+        function sendFish() {
             const btn = document.getElementById('btn-send');
             btn.innerText = "おくりちゅう...";
             btn.disabled = true;
@@ -784,27 +762,21 @@
             // 2. Base64画像に変換して送信
             const base64Image = outCanvas.toDataURL('image/png');
 
-            if (!connectedRoomId) {
+            if (connection && connection.open) {
+                connection.send({ type: 'fish_image', image: base64Image });
+
+                // 送信完了の演出
+                setTimeout(() => {
+                    alert("うみにお魚がとんでいったよ！");
+                    btn.innerText = "🐟 うみにおくる！";
+                    btn.disabled = false;
+                    backToShoot(); // カメラに戻る
+                }, 500);
+            } else {
                 alert("うみとの通信が切れてしまったみたいです。やりなおしてね。");
                 btn.innerText = "🐟 うみにおくる！";
                 btn.disabled = false;
                 showCameraPanel('panel-connect');
-                return;
-            }
-
-            try {
-                const res = await callAppsScriptPost({ action: 'send_fish', roomId: connectedRoomId, image: base64Image });
-                if (!res || res.status !== 'ok') throw new Error('send failed');
-
-                alert("うみにお魚がとんでいったよ！");
-                btn.innerText = "🐟 うみにおくる！";
-                btn.disabled = false;
-                backToShoot(); // カメラに戻る
-            } catch (e) {
-                console.error('sendFish error', e);
-                alert("うみに届けられなかったよ。インターネットの状態をたしかめて、もう一度おくってね。");
-                btn.innerText = "🐟 うみにおくる！";
-                btn.disabled = false;
             }
         }
 
