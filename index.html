@@ -150,6 +150,54 @@
         let peer = null;
         let connection = null; // カメラ側から海側への接続
 
+        // ==========================================
+        // 🌐 TURN/STUNサーバー設定
+        // ------------------------------------------
+        // 【なぜ必要？】
+        // 1台のiPadで2つのタブを開いた場合は「同じ機械の中」だけで
+        // つながるので問題なく動きます。しかし2台の別々のiPadを
+        // つなぐときは、学校などのWi-Fiという「本物のネットワーク」
+        // を経由する必要があります。教室・学校のWi-Fiの多くは安全
+        // のために「端末どうしの直接通信」をブロックする設定
+        // （クライアント分離／AP分離）になっていることが多く、
+        // その場合は中継役の「TURNサーバー」がないと2台のiPad間の
+        // 接続が確立できません（これが「2台では接続できない」原因
+        // です）。下記に無料のTURNサーバー（Metered.ca）の情報を
+        // 設定すると、2台のiPadでもつながるようになります。
+        //
+        // 【設定方法（5分くらいでできます）】
+        // 1. https://www.metered.ca/ で無料アカウントを作成
+        // 2. ダッシュボードで「TURN Server」アプリを作成
+        // 3. 表示される「App Name」を確認（例: myapp123）
+        // 4. 表示される「API Key」をコピー
+        //    （このAPIキーは見られても問題ない種類のものです）
+        // 5. 下の2行に貼り付けて保存・公開してください
+        // ==========================================
+        const METERED_APP_NAME = ""; // 例: "myapp123"
+        const METERED_API_KEY = "";  // 例: "abcdef0123456789..."
+
+        let cachedIceServers = null;
+        async function getIceServers() {
+            if (cachedIceServers) return cachedIceServers;
+            // 最低限の保険としてGoogleのSTUNサーバーは常に入れておく
+            const stunOnly = [{ urls: 'stun:stun.l.google.com:19302' }];
+            if (!METERED_APP_NAME || !METERED_API_KEY) {
+                console.warn('TURNサーバーが未設定です。同じWi-Fiでも2台のiPad間で接続できない場合があります。');
+                cachedIceServers = stunOnly;
+                return cachedIceServers;
+            }
+            try {
+                const res = await fetch(`https://${METERED_APP_NAME}.metered.live/api/v1/turn/credentials?apiKey=${METERED_API_KEY}`);
+                if (!res.ok) throw new Error('TURN認証情報の取得に失敗: ' + res.status);
+                const turnServers = await res.json();
+                cachedIceServers = (Array.isArray(turnServers) && turnServers.length) ? stunOnly.concat(turnServers) : stunOnly;
+            } catch (e) {
+                console.warn('TURNサーバーの取得に失敗。STUNのみで接続を試みます。', e);
+                cachedIceServers = stunOnly;
+            }
+            return cachedIceServers;
+        }
+
         // --- 海モード用 ---
         let roomID = "";
         let seaPeerRetries = 0;
@@ -226,13 +274,14 @@
             if (f) f.innerText = '🐟 ' + fishes.length + 'ひき';
         }
 
-        function createSeaPeer() {
+        async function createSeaPeer() {
             // 4桁のランダムなルームIDを生成
             roomID = Math.floor(1000 + Math.random() * 9000).toString();
             document.getElementById('display-room-id').innerText = roomID;
 
             const peerId = 'suizokukan-' + roomID;
-            peer = new Peer(peerId);
+            const iceServers = await getIceServers();
+            peer = new Peer(peerId, { config: { iceServers } });
 
             peer.on('open', (id) => {
                 console.log('海が開きました。ID:', id);
@@ -519,15 +568,22 @@
             ensureCameraPeer();
         }
 
+        let peerInitPromise = null;
         function ensureCameraPeer() {
-            if (peer && !peer.destroyed) return;
-            peer = new Peer(); // 子機側のPeer初期化（IDは自動）
-            peer.on('error', (err) => {
-                console.error('camera peer error', err);
-                // peer-unavailable は相手が見つからない＝番号ちがいのことが多い
-                handleConnectError(err);
-            });
-            peer.on('disconnected', () => { try { peer.reconnect(); } catch (e) {} });
+            if (peer && !peer.destroyed) return Promise.resolve();
+            if (peerInitPromise) return peerInitPromise;
+            peerInitPromise = (async () => {
+                const iceServers = await getIceServers();
+                peer = new Peer(undefined, { config: { iceServers } }); // 子機側のPeer初期化（IDは自動）
+                peer.on('error', (err) => {
+                    console.error('camera peer error', err);
+                    // peer-unavailable は相手が見つからない＝番号ちがいのことが多い
+                    handleConnectError(err);
+                });
+                peer.on('disconnected', () => { try { peer.reconnect(); } catch (e) {} });
+                peerInitPromise = null;
+            })();
+            return peerInitPromise;
         }
 
         function handleConnectError(err) {
@@ -546,7 +602,7 @@
             }
         }
 
-        function connectToSea() {
+        async function connectToSea() {
             const inputId = document.getElementById('input-room-id').value;
             const statusText = document.getElementById('connect-status');
             const btn = document.getElementById('btn-connect');
@@ -557,11 +613,12 @@
                 return;
             }
 
-            ensureCameraPeer();
             btn.innerText = "つないでいます...";
             btn.disabled = true;
             statusText.classList.add('hidden');
             pendingConnect = true;
+
+            await ensureCameraPeer();
 
             const targetPeerId = 'suizokukan-' + inputId;
 
